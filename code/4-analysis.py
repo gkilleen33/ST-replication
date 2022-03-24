@@ -12,10 +12,9 @@ import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 from linearmodels.panel import PanelOLS
-from stargazer.stargazer import Stargazer
 from scipy.stats.mstats import winsorize
-from randomization_inference import ri_p_values, cs_ri_p_values
-import multiprocess as mp
+from statsmodels.sandbox.regression.gmm import GMM
+from sklearn.inspection import permutation_importance
 
 #%% 
 # Set the working directory to the parent folder of this script 
@@ -95,14 +94,14 @@ print(viirs_model.summary())
 viirs_capita_model = smf.ols('log_GDP_capita ~ log_nightlights_capita*C(year)', data=national_data).fit(cov_type='cluster', cov_kwds={'groups': national_data['country_id']})
 print(viirs_capita_model.summary())
 
-# Export results to latex
+# Export results to latex (Note: eliminated stars to adhere to journal submission guidelines)
 def assign_stars(coef, pval):
     if pval < .01:
-        return '{:,.3f}'.format(coef) + '\sym{***}'
+        return '{:,.3f}'.format(coef) # + '\sym{***}'
     elif pval < .05:
-        return '{:,.3f}'.format(coef) + '\sym{**}'
+        return '{:,.3f}'.format(coef) # + '\sym{**}'
     elif pval < 0.1:
-        return '{:,.3f}'.format(coef) + '\sym{*}'
+        return '{:,.3f}'.format(coef) # + '\sym{*}'
     else:
         return '{:,.3f}'.format(coef)
     
@@ -221,6 +220,13 @@ with open('tables/cross_tab.tex', 'w') as f:
     
 df['rainfall'] = 24*df['rainfall']  # From mm/hr to mm/day
 df['total_ensl'] = (1/1000)*df['total_ensl']  # For display
+
+#%% 
+# Create a cross-sectional version of the data with output averaged across years (primary)
+# Preserve panel data for appendix 
+
+df_panel = df.copy(deep=True)
+df = df.groupby('ethnicity_id').agg('mean')
     
 #%% 
 # Add summary stats 
@@ -239,13 +245,13 @@ def generate_sum_stats(out_path, variables, new_var_names = dict()):
         
         sum_stats.loc[index_mean, 'ST = 0'] = '{:,.3f}'.format(df[df['slave_trade'] == 0][var].mean())
         sum_stats.loc[index_sd, 'ST = 0'] = '[{:,.3f}]'.format(df[df['slave_trade'] == 0][var].std())
-        st_reg = smf.ols('{} ~ slave_trade'.format(var), data=df[df['year'] == 2014]).fit(cov_type='HC0')
+        st_reg = smf.ols('{} ~ slave_trade'.format(var), data=df).fit(cov_type='HC0')
         sum_stats.loc[index_mean, 'ST: 1-0'] = assign_stars(st_reg.params['slave_trade'], st_reg.pvalues['slave_trade'])
         sum_stats.loc[index_sd, 'ST: 1-0'] = '({:,.3f})'.format(st_reg.bse['slave_trade'])
         
         sum_stats.loc[index_mean, 'Persistent = 0'] = '{:,.3f}'.format(df[df['persistent'] == 0][var].mean())
         sum_stats.loc[index_sd, 'Persistent = 0'] = '[{:,.3f}]'.format(df[df['persistent'] == 0][var].std())
-        st_reg = smf.ols('{} ~ persistent'.format(var), data=df[df['year'] == 2014]).fit(cov_type='HC0')
+        st_reg = smf.ols('{} ~ persistent'.format(var), data=df).fit(cov_type='HC0')
         sum_stats.loc[index_mean, 'Persistent: 1-0'] = assign_stars(st_reg.params['persistent'], st_reg.pvalues['persistent'])
         sum_stats.loc[index_sd, 'Persistent: 1-0'] = '({:,.3f})'.format(st_reg.bse['persistent'])
         
@@ -253,18 +259,18 @@ def generate_sum_stats(out_path, variables, new_var_names = dict()):
         
     obs_index = len(sum_stats)
     sum_stats.loc[obs_index, 'Variable'] = 'Observations'
-    sum_stats.loc[obs_index, 'Full sample'] = '{:,.0f}'.format(len(df[df['year'] == 2014]))
-    sum_stats.loc[obs_index, 'ST = 0'] = '{:,.0f}'.format(len(df[(df['year'] == 2014) & (df['slave_trade'] == 0)]))
-    sum_stats.loc[obs_index, 'ST: 1-0'] = '{:,.0f}'.format(len(df[df['year'] == 2014]))
-    sum_stats.loc[obs_index, 'Persistent = 0'] = '{:,.0f}'.format(len(df[(df['year'] == 2014) & (df['persistent'] == 0)]))
-    sum_stats.loc[obs_index, 'Persistent: 1-0'] = '{:,.0f}'.format(len(df[df['year'] == 2014])) 
+    sum_stats.loc[obs_index, 'Full sample'] = '{:,.0f}'.format(len(df))
+    sum_stats.loc[obs_index, 'ST = 0'] = '{:,.0f}'.format(len(df[df['slave_trade'] == 0]))
+    sum_stats.loc[obs_index, 'ST: 1-0'] = '{:,.0f}'.format(len(df))
+    sum_stats.loc[obs_index, 'Persistent = 0'] = '{:,.0f}'.format(len(df[df['persistent'] == 0]))
+    sum_stats.loc[obs_index, 'Persistent: 1-0'] = '{:,.0f}'.format(len(df)) 
     
     dep_vars = ' + '.join(variables)
     f_stat_index = len(sum_stats)
     sum_stats.loc[f_stat_index, 'Variable'] = 'p-val joint orthogonality'
-    st_reg = smf.ols('slave_trade ~ {}'.format(dep_vars), data=df[df['year'] == 2014]).fit(cov_type='HC0')
+    st_reg = smf.ols('slave_trade ~ {}'.format(dep_vars), data=df).fit(cov_type='HC0')
     sum_stats.loc[f_stat_index, 'ST: 1-0'] = '{:,.3f}'.format(st_reg.f_pvalue)
-    st_reg = smf.ols('persistent ~ {}'.format(dep_vars), data=df[df['year'] == 2014]).fit(cov_type='HC0')
+    st_reg = smf.ols('persistent ~ {}'.format(dep_vars), data=df).fit(cov_type='HC0')
     sum_stats.loc[f_stat_index, 'Persistent: 1-0'] = '{:,.3f}'.format(st_reg.f_pvalue)
     
     if len(new_var_names) > 0:
@@ -282,7 +288,7 @@ sum_to_rename = {'diamonds': 'Diamond deposits',
                 'malaria_pf': 'Malaria (Pf)', 'malaria_pv': 'Malaria (Pv)', 
                 'rainfall': 'Annual rainfall (mm/day)', 'neighbors': 'Neighbors',
                 'num_coloni': 'Colonizers (number)', 'Belgium': 'Belgium (colonized by)',
-                'population': 'Population (2014, mil)'}
+                'population': 'Population (mil)'}
 
 df['population'] = (1/10**6)*df['population']
 
@@ -291,30 +297,34 @@ generate_sum_stats('tables/summary.tex', sum_vars, sum_to_rename)
 #%% 
 
 # log(GDP/capita)
-ols1 = PanelOLS.from_formula('log_gdp_capita ~ slave_trade + TimeEffects', data=df).fit(cov_type="clustered", cluster_entity=True)
-print(ols1)
+ols1 = smf.ols('log_gdp_capita ~ slave_trade', data=df).fit(cov_type='HC0')
+print(ols1.summary())
 
 # log(nightlights)
-ols2 = PanelOLS.from_formula('log_gdp ~ slave_trade + TimeEffects', data=df).fit(cov_type="clustered", cluster_entity=True)
-print(ols2)
+ols2 = smf.ols('log_gdp ~ slave_trade', data=df).fit(cov_type='HC0')
+print(ols2.summary())
 
 # Add controls 
 controls = 'diamonds + oil + gold_dep + malaria_pf + malaria_pv + rainfall + neighbors'
-ols3 = PanelOLS.from_formula('log_gdp_capita ~ slave_trade + {} + TimeEffects'.format(controls), data=df).fit(cov_type="clustered", cluster_entity=True)
-print(ols3)
+ols3 = smf.ols('log_gdp_capita ~ slave_trade + {}'.format(controls), data=df).fit(cov_type='HC0')
+print(ols3.summary())
 
-ols4 = PanelOLS.from_formula('log_gdp ~ slave_trade + {} + TimeEffects'.format(controls), data=df).fit(cov_type="clustered", cluster_entity=True)
-print(ols4)
+ols4 = smf.ols('log_gdp ~ slave_trade + {}'.format(controls), data=df).fit(cov_type='HC0')
+print(ols4.summary())
 
-#%% Define a function to export the PanelOLS results to latex, and do so 
+#%% Define a function to export the PanelOLS results to latex
+# Note: Also supports cross-sections
 
-def panel_to_tex(out_path, results, new_var_names=dict(), ri=False, ri_p_vals = None, cross_section=False, rf_bootstrap = None):
+def panel_to_tex(out_path, results, new_var_names=dict(), ri=False, ri_p_vals = None, cross_section=False, rf_bootstrap = None, var_order = None):
     to_export = pd.DataFrame(columns=['Var'])
     var_names = list()
-    for r in results:
-        for v in r.params.keys():
-            if v not in var_names:
-                var_names.append(v)
+    if var_order:
+        var_names = var_order 
+    else:
+        for r in results:
+            for v in r.params.keys():
+                if v not in var_names:
+                    var_names.append(v)
     for v in var_names:
         to_export.loc[len(to_export)] = v
         to_export.loc[len(to_export)] = ''  # For SE
@@ -381,159 +391,138 @@ def panel_to_tex(out_path, results, new_var_names=dict(), ri=False, ri_p_vals = 
 to_rename = {'slave_trade': 'Slave trade', 'diamonds': 'Diamond deposits', 'oil': 'Oil', 'gold_dep': 'Gold deposits', 
              'malaria_pf': 'Malaria (Pf)', 'malaria_pv': 'Malaria (Pv)', 'rainfall': 'Annual rainfall (mm/day)', 
              'neighbors': 'Neighbors'}
-panel_to_tex('tables/ols.tex', [ols1, ols2, ols3, ols4], to_rename)
+panel_to_tex('tables/ols.tex', [ols1, ols2, ols3, ols4], to_rename, cross_section=True)
+
 
 #%% 
-# Now estimate a diff in diff model 
+# Now estimate the diff-in-diff model
 # log(GDP/capita)
-dd_ri_p = list()
 
-dd1 = PanelOLS.from_formula('log_gdp_capita ~ slave_trade * persistent + TimeEffects', data=df).fit(cov_type="clustered", cluster_entity=True)
-dd_ri_p.append(ri_p_values('log_gdp_capita ~ slave_trade * persistent', df, dd1.params, 10000))
-print(dd1)
-
-# log(nightlights)
-dd2 = PanelOLS.from_formula('log_gdp ~ slave_trade * persistent + TimeEffects', data=df).fit(cov_type="clustered", cluster_entity=True)
-dd_ri_p.append(ri_p_values('log_gdp ~ slave_trade * persistent', df, dd2.params, 10000))
-print(dd2)
-
-# Add controls 
-dd3 = PanelOLS.from_formula('log_gdp_capita ~ slave_trade * persistent + {} + TimeEffects'.format(controls), data=df).fit(cov_type="clustered", cluster_entity=True)
-dd_ri_p.append(ri_p_values('log_gdp_capita ~ slave_trade * persistent + {}'.format(controls), df, dd3.params, 10000))
-print(dd3)
-
-dd4 = PanelOLS.from_formula('log_gdp ~ slave_trade * persistent + {} + TimeEffects'.format(controls), data=df).fit(cov_type="clustered", cluster_entity=True)
-dd_ri_p.append(ri_p_values('log_gdp ~ slave_trade * persistent + {}'.format(controls), df, dd4.params, 10000))
-print(dd4)
-
-# Now restrict to West Africa only 
-west_africa = df.loc[df.west_afric == 1, :]  # a cutoff by character limit in zonal stats
-west_africa.set_index(['ethnicity_id', 'year'], inplace=True, drop=False)
-
-dd5 = PanelOLS.from_formula('log_gdp_capita ~ slave_trade * persistent + {} + TimeEffects'.format(controls), data=west_africa).fit(cov_type="clustered", cluster_entity=True)
-dd_ri_p.append(ri_p_values('log_gdp_capita ~ slave_trade * persistent + {}'.format(controls), west_africa, dd5.params, 10000))
-print(dd5)
-
-dd6 = PanelOLS.from_formula('log_gdp ~ slave_trade * persistent + {} + TimeEffects'.format(controls), data=west_africa).fit(cov_type="clustered", cluster_entity=True)
-dd_ri_p.append(ri_p_values('log_gdp ~ slave_trade * persistent + {}'.format(controls), west_africa, dd6.params, 10000))
-print(dd6)
-
-to_rename['persistent'] = 'Persistent ethnicity'
-to_rename['slave_trade:persistent'] = 'Slave trade x Persistent'
-panel_to_tex('tables/diff-in-diff.tex', [dd1, dd2, dd3, dd4, dd5, dd6], to_rename, ri=True, ri_p_vals=dd_ri_p)
-
-#%% 
-# Appendix: Diff-in-diff using only 2018 data
-# log(GDP/capita)
-df_cs = df.groupby('ethnicity_id').agg('mean')
-dd_cs_ri_p = list()
-
-dd_cs_1 = smf.ols('log_gdp_capita ~ slave_trade * persistent', data=df_cs).fit(cov_type='HC0')
-dd_cs_ri_p.append(cs_ri_p_values('log_gdp_capita ~ slave_trade * persistent', df_cs, dd_cs_1.params, 10000))
+dd_cs_1 = smf.ols('log_gdp_capita ~ slave_trade * persistent', data=df).fit(cov_type='HC0')
 print(dd_cs_1.summary())
 
 # log(nightlights)
-dd_cs_2 = smf.ols('log_gdp ~ slave_trade * persistent', data=df_cs).fit(cov_type='HC0')
-dd_cs_ri_p.append(cs_ri_p_values('log_gdp ~ slave_trade * persistent', df_cs, dd_cs_2.params, 10000))
+dd_cs_2 = smf.ols('log_gdp ~ slave_trade * persistent', data=df).fit(cov_type='HC0')
 print(dd_cs_2.summary())
 
 # Add controls 
-dd_cs_3 = smf.ols('log_gdp_capita ~ slave_trade * persistent + {}'.format(controls), data=df_cs).fit(cov_type='HC0')
-dd_cs_ri_p.append(cs_ri_p_values('log_gdp_capita ~ slave_trade * persistent + {}'.format(controls), df_cs, dd_cs_3.params, 10000))
+dd_cs_3 = smf.ols('log_gdp_capita ~ slave_trade * persistent + {}'.format(controls), data=df).fit(cov_type='HC0')
 print(dd_cs_3.summary())
 
-dd_cs_4 = smf.ols('log_gdp ~ slave_trade * persistent + {}'.format(controls), data=df_cs).fit(cov_type='HC0')
-dd_cs_ri_p.append(cs_ri_p_values('log_gdp ~ slave_trade * persistent + {}'.format(controls), df_cs, dd_cs_4.params, 10000))
+dd_cs_4 = smf.ols('log_gdp ~ slave_trade * persistent + {}'.format(controls), data=df).fit(cov_type='HC0')
 print(dd_cs_4.summary())
 
 # Now restrict to West Africa only 
-west_africa_cs = df_cs.loc[df_cs.west_afric == 1, :]
+west_africa_cs = df.loc[df.west_afric == 1, :]
 dd_cs_5 = smf.ols('log_gdp_capita ~ slave_trade * persistent + {}'.format(controls), data=west_africa_cs).fit(cov_type='HC0')
-dd_cs_ri_p.append(cs_ri_p_values('log_gdp_capita ~ slave_trade * persistent + {}'.format(controls), west_africa_cs, dd_cs_5.params, 10000))
-print(dd5)
+print(dd_cs_5.summary())
 
 dd_cs_6 = smf.ols('log_gdp ~ slave_trade * persistent + {}'.format(controls), data=west_africa_cs).fit(cov_type='HC0')
-dd_cs_ri_p.append(cs_ri_p_values('log_gdp ~ slave_trade * persistent + {}'.format(controls), west_africa_cs, dd_cs_6.params, 10000))
+print(dd_cs_6.summary())
+
+to_rename['persistent'] = 'Persistent ethnicity'
+to_rename['slave_trade:persistent'] = 'Slave trade x Persistent'
+panel_to_tex('tables/diff-in-diff.tex', [dd_cs_1, dd_cs_2, dd_cs_3, dd_cs_4, dd_cs_5, dd_cs_6], to_rename, ri=False, cross_section=True)
+
+#%% 
+# Appendix: Diff-in-diff with panel data (to show excluding year fixed effects with night lights doesn't matter)
+# log(GDP/capita)
+dd1 = PanelOLS.from_formula('log_gdp_capita ~ slave_trade * persistent + TimeEffects', data=df_panel).fit(cov_type="clustered", cluster_entity=True)
+print(dd1)
+
+# log(nightlights)
+dd2 = PanelOLS.from_formula('log_gdp ~ slave_trade * persistent + TimeEffects', data=df_panel).fit(cov_type="clustered", cluster_entity=True)
+print(dd2)
+
+# Add controls 
+dd3 = PanelOLS.from_formula('log_gdp_capita ~ slave_trade * persistent + {} + TimeEffects'.format(controls), data=df_panel).fit(cov_type="clustered", cluster_entity=True)
+print(dd3)
+
+dd4 = PanelOLS.from_formula('log_gdp ~ slave_trade * persistent + {} + TimeEffects'.format(controls), data=df_panel).fit(cov_type="clustered", cluster_entity=True)
+print(dd4)
+
+# Now restrict to West Africa only 
+west_africa = df_panel.loc[df_panel.west_afric == 1, :]  # a cutoff by character limit in zonal stats
+west_africa.set_index(['ethnicity_id', 'year'], inplace=True, drop=False)
+
+dd5 = PanelOLS.from_formula('log_gdp_capita ~ slave_trade * persistent + {} + TimeEffects'.format(controls), data=west_africa).fit(cov_type="clustered", cluster_entity=True)
+print(dd5)
+
+dd6 = PanelOLS.from_formula('log_gdp ~ slave_trade * persistent + {} + TimeEffects'.format(controls), data=west_africa).fit(cov_type="clustered", cluster_entity=True)
 print(dd6)
 
 to_rename['persistent'] = 'Persistent ethnicity'
 to_rename['slave_trade:persistent'] = 'Slave trade x Persistent'
-panel_to_tex('tables/diff-in-diff-cs.tex', [dd_cs_1, dd_cs_2, dd_cs_3, dd_cs_4, dd_cs_5, dd_cs_6], to_rename, ri=True, ri_p_vals=dd_cs_ri_p, cross_section=True)
+panel_to_tex('tables/diff-in-diff-panel.tex', [dd1, dd2, dd3, dd4, dd5, dd6], to_rename, ri=False)
 
 #%% 
-# Examine the ability to predict persistence of ethnic groups (note: only use 1 year of data since no nightlights)
+# Examine the ability to predict persistence of ethnic groups
 df['slaves_area'] = df['total_ensl'] / df['area']
 
 pers_controls = controls + ' + num_coloni + Belgium + Britain + France + Germany + Italy + Portugal + Spain'
 
-pers1 = smf.ols('persistent ~ slave_trade', data=df[df['year'] == 2014]).fit(cov_type='HC0')
+pers1 = smf.ols('persistent ~ slave_trade', data=df).fit(cov_type='HC0')
 print(pers1.summary())
 
-pers2 = smf.ols('persistent ~ slave_trade + {}'.format(pers_controls), data=df[df['year'] == 2014]).fit(cov_type='HC0')
+pers2 = smf.ols('persistent ~ slave_trade + {}'.format(pers_controls), data=df).fit(cov_type='HC0')
 print(pers2.summary())
 
-pers3 = smf.ols('persistent ~ slaves_area', data=df[df['year'] == 2014]).fit(cov_type='HC0')
+pers3 = smf.ols('persistent ~ slaves_area', data=df).fit(cov_type='HC0')
 print(pers3.summary())
 
-pers4 = smf.ols('persistent ~ slaves_area + {}'.format(pers_controls), data=df[df['year'] == 2014]).fit(cov_type='HC0')
+pers4 = smf.ols('persistent ~ slaves_area + {}'.format(pers_controls), data=df).fit(cov_type='HC0')
 print(pers4.summary())
 
-pers5 = smf.ols('persistent ~ slaves_area', data=df[(df['year'] == 2014) & (df['slave_trade'] == 1)]).fit(cov_type='HC0')
+pers5 = smf.ols('persistent ~ slaves_area', data=df[df['slave_trade'] == 1]).fit(cov_type='HC0')
 print(pers5.summary())
 
-pers6 = smf.ols('persistent ~ slaves_area + {}'.format(pers_controls), df[(df['year'] == 2014) & (df['slave_trade'] == 1)]).fit(cov_type='HC0')
+pers6 = smf.ols('persistent ~ slaves_area + {}'.format(pers_controls), df[df['slave_trade'] == 1]).fit(cov_type='HC0')
 print(pers6.summary())
 
-results = Stargazer([pers1, pers2, pers3, pers4, pers5, pers6])
-results.covariate_order(['slave_trade', 'slaves_area', 'diamonds', 'oil', 'gold_dep', 
+order_pers = ['Intercept', 'slave_trade', 'slaves_area', 'diamonds', 'oil', 'gold_dep', 
                          'malaria_pf', 'malaria_pv', 'rainfall', 'neighbors',
                          'num_coloni', 'Belgium', 'Britain', 'France',
-                         'Germany', 'Italy', 'Portugal', 'Spain'])
-results.rename_covariates({'slaves_area': 'Slaves/area', 'slave_trade': 'Slave trade',
+                         'Germany', 'Italy', 'Portugal', 'Spain']
+
+to_rename_pers = {'slaves_area': 'Slaves/area', 'slave_trade': 'Slave trade',
                            'diamonds': 'Diamond deposits', 
                            'oil': 'Oil', 'gold_dep': 'Gold deposits', 
                            'malaria_pf': 'Malaria (Pf)', 'malaria_pv': 'Malaria (Pv)', 
                            'rainfall': 'Annual rainfall (mm/day)', 'neighbors': 'Neighbors',
-                           'num_coloni': 'Colonizers (number)', 'Belgium': 'Belgium (colonized by)'})
+                           'num_coloni': 'Colonizers (number)', 'Belgium': 'Belgium (colonized by)'}
 
-with open('tables/persistence.tex', 'w') as f:
-    f.write(results.render_latex())
+panel_to_tex('tables/persistence.tex', [pers1, pers2, pers3, pers4, pers5, pers6], to_rename_pers, 
+             ri=False, cross_section=True, var_order = order_pers)
+
 
 #%% 
 # For appendix: regression on raw nightlights 
-nl_ri_p = list()
 
 # log(NL/capita)
-nl1 = PanelOLS.from_formula('log_nightlights_capita ~ slave_trade * persistent + TimeEffects', data=df).fit(cov_type="clustered", cluster_entity=True)
-nl_ri_p.append(ri_p_values('log_nightlights_capita ~ slave_trade * persistent', df, nl1.params, 10000))
+nl1 = PanelOLS.from_formula('log_nightlights_capita ~ slave_trade * persistent + TimeEffects', data=df_panel).fit(cov_type="clustered", cluster_entity=True)
 print(nl1)
 
 # log(nightlights)
-nl2 = PanelOLS.from_formula('log_nightlights ~ slave_trade * persistent + TimeEffects', data=df).fit(cov_type="clustered", cluster_entity=True)
-nl_ri_p.append(ri_p_values('log_nightlights ~ slave_trade * persistent', df, nl2.params, 10000))
+nl2 = PanelOLS.from_formula('log_nightlights ~ slave_trade * persistent + TimeEffects', data=df_panel).fit(cov_type="clustered", cluster_entity=True)
 print(nl2)
 
 # Add controls 
-nl3 = PanelOLS.from_formula('log_nightlights_capita ~ slave_trade * persistent + {} + TimeEffects'.format(controls), data=df).fit(cov_type="clustered", cluster_entity=True)
-nl_ri_p.append(ri_p_values('log_nightlights_capita ~ slave_trade * persistent + {}'.format(controls), df, nl3.params, 10000))
+nl3 = PanelOLS.from_formula('log_nightlights_capita ~ slave_trade * persistent + {} + TimeEffects'.format(controls), data=df_panel).fit(cov_type="clustered", cluster_entity=True)
 print(nl3)
 
-nl4 = PanelOLS.from_formula('log_nightlights ~ slave_trade * persistent + {} + TimeEffects'.format(controls), data=df).fit(cov_type="clustered", cluster_entity=True)
-nl_ri_p.append(ri_p_values('log_nightlights ~ slave_trade * persistent + {}'.format(controls), df, nl4.params, 10000))
+nl4 = PanelOLS.from_formula('log_nightlights ~ slave_trade * persistent + {} + TimeEffects'.format(controls), data=df_panel).fit(cov_type="clustered", cluster_entity=True)
 print(nl4)
 
 # Now restrict to West Africa only 
 nl5 = PanelOLS.from_formula('log_nightlights_capita ~ slave_trade * persistent + {} + TimeEffects'.format(controls), data=west_africa).fit(cov_type="clustered", cluster_entity=True)
-nl_ri_p.append(ri_p_values('log_nightlights_capita ~ slave_trade * persistent + {}'.format(controls), west_africa, nl5.params, 10000))
-print(nl3)
+print(nl5)
 
 nl6 = PanelOLS.from_formula('log_nightlights ~ slave_trade * persistent + {} + TimeEffects'.format(controls), data=west_africa).fit(cov_type="clustered", cluster_entity=True)
-nl_ri_p.append(ri_p_values('log_nightlights ~ slave_trade * persistent + {}'.format(controls), west_africa, nl6.params, 10000))
-print(nl4)
+print(nl6)
 
 to_rename['persistent'] = 'Persistent ethnicity'
 to_rename['slave_trade:persistent'] = 'Slave trade x Persistent'
-panel_to_tex('tables/diff-in-diff-nl.tex', [nl1, nl2, nl3, nl4, nl5, nl6], to_rename, ri=True, ri_p_vals=nl_ri_p)
+panel_to_tex('tables/diff-in-diff-nl.tex', [nl1, nl2, nl3, nl4, nl5, nl6], to_rename, ri=False)
 
 #%% 
 
@@ -543,15 +532,15 @@ from sklearn.model_selection import RandomizedSearchCV
 
 
 # Now attempt to predict persistence with a random forest among groups that did not participate in the slave trade
-df_2014 = df[(df['year'] == 2014) & (df['slave_trade'] == 0)]
+df_st0 = df[df['slave_trade'] == 0]
 
 # First use all observations for hyperparameter searching using CV
-X = df_2014[['diamonds', 'oil', 'gold_dep', 'malaria_pf', 'malaria_pv', 'rainfall', 'surface',
+X = df_st0[['diamonds', 'oil', 'gold_dep', 'malaria_pf', 'malaria_pv', 'rainfall', 'surface',
            'num_coloni', 'lat', 'lon', 'Belgium', 'Britain', 'France', 'Germany', 'Italy', 'Portugal', 'Spain']]
 features = list(X.columns)
 X = X.values
 
-y = df_2014[['persistent']].values.ravel()
+y = df_st0[['persistent']].values.ravel()
 
 def evaluate_model(predictions, probs, y_test):
     """Compare machine learning model to baseline performance.
@@ -590,6 +579,7 @@ def evaluate_model(predictions, probs, y_test):
 # Hyperparameter grid
 param_grid = {
     'n_estimators': np.linspace(10, 100).astype(int),
+    'criterion': ['gini'],
     'max_depth': [None] + list(np.linspace(3, 20).astype(int)),
     'max_features': ['auto', 'sqrt', None] + list(np.arange(0.5, 1, 0.1)),
     'max_leaf_nodes': [None] + list(np.linspace(10, 50).astype(int)),
@@ -603,7 +593,7 @@ estimator = RandomForestClassifier(random_state = 0)
 
 # Create the random search model
 rs = RandomizedSearchCV(estimator, param_grid, n_jobs = -1, 
-                        scoring = 'roc_auc', cv = 10, 
+                        scoring = 'neg_log_loss', cv = 10, 
                         n_iter = 100, verbose = 1, random_state=0)
 
 rs.fit(X, y)
@@ -619,13 +609,14 @@ rf = RandomForestClassifier(random_state = 0, n_jobs=-1, **params)
 # Add groups to dataframe for k-fold cross validation (5 approximately equal sized groups partitioned by slave trade, equal assignment for a given ethnicity_id)
 df_rf = df.copy(deep = True)
 df_rf['fold'] = None
-df_rf.sort_values(by=['slave_trade', 'ethnicity_id', 'year'], inplace=True)
-df_rf['row_by_st'] = df_rf.groupby(['slave_trade', 'year']).cumcount() + 1
+df_rf.sort_values(by=['slave_trade'], inplace=True)
+df_rf['row_by_st'] = df_rf.groupby(['slave_trade']).cumcount() + 1
 df_rf.loc[df_rf['slave_trade'] == 0, 'fold'] = pd.cut(df_rf[df_rf['slave_trade'] == 0]['row_by_st'], bins=5, labels=False)
 df_rf.loc[df_rf['slave_trade'] == 1, 'fold'] = pd.cut(df_rf[df_rf['slave_trade'] == 1]['row_by_st'], bins=5, labels=False)
 
 # Now randomly reshuffle the folds within slave trade status, keeping groups fixed
 import random
+df_rf['ethnicity_id'] = df_rf.index
 ids_1 = df_rf.loc[df_rf['slave_trade'] == 0, 'ethnicity_id'].unique()
 random.Random(0).shuffle(ids_1)
 
@@ -640,21 +631,22 @@ temp = temp.set_index('ethnicity_id').loc[ids].reset_index()
 df_rf['fold'] = list(temp['fold'])
 
 results = df_rf.copy(deep=True)
-results = results.loc[:, ['ethnicity_id', 'year', 'fold', 'persistent', 'slave_trade']]
+results = results.loc[:, ['ethnicity_id', 'fold', 'persistent', 'slave_trade']]
 results['predicted_persistence'] = None
 results['predicted_probabilities'] = None
 
-# Now train, predict, and score using 5-fold CV 
+# Now train, predict, and score using 5-fold CV
+feature_importance = list() 
 for k in range(5):
     df_k = df_rf.loc[df_rf['fold'] == k]
     df_nk = df_rf.loc[df_rf['fold'] != k]
     
-    # Extract the 2014 observations with slave_trade = 0 in groups nk for training 
-    X_nk = df_nk[(df_nk['year'] == 2014) & (df_nk['slave_trade'] == 0)]
+    # Extract the observations with slave_trade = 0 in groups nk for training 
+    X_nk = df_nk[df_nk['slave_trade'] == 0]
     X_nk = X_nk[['diamonds', 'oil', 'gold_dep', 'malaria_pf', 'malaria_pv', 'rainfall', 'surface',
                  'num_coloni', 'lat', 'lon', 'Belgium', 'Britain', 'France', 'Germany', 
                  'Italy', 'Portugal', 'Spain']]
-    y_nk = df_nk[(df_nk['year'] == 2014) & (df_nk['slave_trade'] == 0)]
+    y_nk = df_nk[df_nk['slave_trade'] == 0]
     y_nk = y_nk[['persistent']].values.ravel()
 
     # Train model 
@@ -666,250 +658,324 @@ for k in range(5):
                 'Germany', 'Italy', 'Portugal', 'Spain']].values
     results.loc[results['fold'] == k, 'predicted_persistence'] = rf.predict(X_k)
     results.loc[results['fold'] == k, 'predicted_probabilities'] = rf.predict_proba(X_k)[:, 1]
+    result = permutation_importance(
+        rf, X_nk, y_nk, n_repeats=10, random_state=0, n_jobs=-1
+    )
+    feature_importance.append(result)
 
 results['predicted_persistence'] = results['predicted_persistence'].astype('int64')
 
-evaluate_model(results.loc[(results['year'] == 2014) & (results['slave_trade'] == 0), 'predicted_persistence'], 
-               results.loc[(results['year'] == 2014) & (results['slave_trade'] == 0), 'predicted_probabilities'], 
-               results.loc[(results['year'] == 2014) & (results['slave_trade'] == 0), 'persistent'])
+average_importance = 0.2*feature_importance[0].importances_mean + 0.2*feature_importance[1].importances_mean + 0.2*feature_importance[2].importances_mean + 0.2*feature_importance[3].importances_mean + 0.2*feature_importance[4].importances_mean
+importance = np.hstack([feature_importance[0].importances, feature_importance[1].importances, feature_importance[2].importances, feature_importance[3].importances, feature_importance[4].importances])
+
+feature_names = np.array(['Diamond deposits', 'Oil', 'Gold deposits', 'Malaria (Pf)', 'Malaria (Pv)', 
+                 'Rainfall', 'Land type', 'Num colonizers', 
+                 'Latitude', 'Longitude',
+                 'Belgium', 'Britain', 'France', 
+                 'Germany', 'Italy', 'Portugal', 'Spain'])
+
+sorted_idx = average_importance.argsort()
+fig, ax = plt.subplots()
+ax.boxplot(
+    importance[sorted_idx].T, vert=False, labels=feature_names[sorted_idx]
+)
+ax.set_title("Permutation Importances")
+fig.savefig('figures/feature_importance.png', bbox_inches = 'tight', dpi=200)
+fig.show()
+
+
+evaluate_model(results.loc[results['slave_trade'] == 0, 'predicted_persistence'], 
+               results.loc[results['slave_trade'] == 0, 'predicted_probabilities'], 
+               results.loc[results['slave_trade'] == 0, 'persistent'])
 
 plt.savefig('figures/roc.png', bbox_inches = 'tight', dpi=200)
 plt.show()
 
-#%% Now look at a diff in diff with predicted persistence 
+#%% Now use predicted persistence as a proxy for persistence, with GMM estimation according to Botosaru and Gutierrez 
 
-df = df.merge(results[['ethnicity_id', 'year', 'predicted_persistence']], on=['ethnicity_id', 'year'])
+df = df.merge(results[['predicted_probabilities']], on=['ethnicity_id'])
+df['predicted_probabilities'] = df['predicted_probabilities'].astype(float)
 
-# Set the entity and time index 
-df['eth_id'] = df['ethnicity_id']
-df['yr'] = df['year']
-df.set_index(['eth_id', 'yr'], inplace=True, drop=True)
+class proxyDiD(GMM):
+    def __init__(self, *args, **kwds):
+        # Set appropriate counts for moment conditions and parameters
+        kwds.setdefault('k_moms', 6)
+        kwds.setdefault('k_params', 6)
+        super(proxyDiD, self).__init__(*args, **kwds)
 
-dd_pred1 = PanelOLS.from_formula('log_gdp_capita ~ slave_trade * predicted_persistence + TimeEffects', data=df).fit(cov_type="clustered", cluster_entity=True)
-print(dd_pred1)
 
-dd_pred2 = PanelOLS.from_formula('log_gdp ~ slave_trade * predicted_persistence + TimeEffects', data=df).fit(cov_type="clustered", cluster_entity=True)
-print(dd_pred2)
+    def momcond(self, params):
+        psi0, psi1, gamma, delta0, delta1, kappa = params
+        y = self.endog
+        slave_trade = self.exog[:,0]
+        persistent = self.exog[:,1]
+        predicted_persistence = self.instrument
+        m1 = (1 - slave_trade)*predicted_persistence*((persistent - gamma*predicted_persistence)/(gamma*predicted_persistence*(1-gamma*predicted_persistence)))
+        m2 = slave_trade*(y-delta1-psi1*gamma*predicted_persistence-predicted_persistence*kappa)
+        m3 = slave_trade*predicted_persistence*(y-delta1-psi1*gamma*predicted_persistence-predicted_persistence*kappa)
+        m4 = (1 - slave_trade)*(y - delta0 - psi0*persistent - predicted_persistence*kappa)
+        m5 = (1 - slave_trade)*predicted_persistence*(y - delta0 - psi0*persistent - predicted_persistence*kappa)
+        m6 = (1 - slave_trade)*persistent*(y - delta0 - psi0*persistent - predicted_persistence*kappa)
+        g = np.column_stack((m1, m2, m3, m4, m5, m6))
+        return g
 
-# Add controls 
-dd_pred3 = PanelOLS.from_formula('log_gdp_capita ~ slave_trade * predicted_persistence + {} + TimeEffects'.format(controls), data=df).fit(cov_type="clustered", cluster_entity=True)
-print(dd_pred3)
+class proxyDiDControls(GMM):
+    def __init__(self, *args, **kwds):
+        # Set appropriate counts for moment conditions and parameters
+        kwds.setdefault('k_moms', 14)
+        kwds.setdefault('k_params', 14)
+        super(proxyDiDControls, self).__init__(*args, **kwds)
 
-dd_pred4 = PanelOLS.from_formula('log_gdp ~ slave_trade * predicted_persistence + {} + TimeEffects'.format(controls), data=df).fit(cov_type="clustered", cluster_entity=True)
-print(dd_pred4)
 
-# Calculate bootstrapped p-values
-df_reindex = df.set_index(['ethnicity_id', 'year'], drop=False, verify_integrity=True)
-df_reindex.drop(columns=['predicted_persistence'], inplace=True)
-ethnicities_ids = pd.DataFrame(df.ethnicity_id.unique())
+    def momcond(self, params):
+        psi0, psi1, gamma, delta0, delta1, kappa, c1, c2, c3, c4, d1, d2, d3, d4 = params
+        y = self.endog
+        slave_trade = self.exog[:,0]
+        persistent = self.exog[:,1]
 
-dd_pred1_bootstraps = pd.DataFrame(columns = list(dd_pred1.params.keys()))
-dd_pred2_bootstraps = pd.DataFrame(columns = list(dd_pred2.params.keys()))
-dd_pred3_bootstraps = pd.DataFrame(columns = list(dd_pred3.params.keys()))
-dd_pred4_bootstraps = pd.DataFrame(columns = list(dd_pred4.params.keys()))
-
-for i in range(1, 10001):
-    rf.random_state = i  # Change the random state in the Random Forest model to account for Monte Carlo uncertainty
-    
-    # Draw a bootstrap sample (sample with replacemenet from ID, but keep all years for each ID draw)
-    bootstrap = ethnicities_ids.sample(n=ethnicities_ids.shape[0], replace=True, random_state=i)
-    bootstrap.rename(columns={bootstrap.columns[0]: 'ethnicity_id'}, inplace=True)
-    years = list(range(2014, 2019))
-    list_of_ids = bootstrap.ethnicity_id.to_list()
-    multiindex = [list_of_ids, np.array(years)]
-    bootstrap_sample_index = pd.MultiIndex.from_product(multiindex, names=['ethnicity_id', 'year'])
-    bootstrap_sample = df_reindex.loc[bootstrap_sample_index, :]
-    bootstrap_sample.reset_index(inplace=True, drop=True)
-    
-    # Estimate the model, using 5-fold CV again
-    
-    # Add groups to dataframe for k-fold cross validation (5 approximately equal sized groups partitioned by slave trade, equal assignment for a given ethnicity_id)
-    bootstrap_sample['fold'] = None
-    bootstrap_sample.sort_values(by=['slave_trade', 'ethnicity_id', 'year'], inplace=True)
-    bootstrap_sample['row_by_st'] = bootstrap_sample.groupby(['slave_trade', 'year']).cumcount() + 1
-    bootstrap_sample.loc[bootstrap_sample['slave_trade'] == 0, 'fold'] = pd.cut(bootstrap_sample[bootstrap_sample['slave_trade'] == 0]['row_by_st'], bins=5, labels=False)
-    bootstrap_sample.loc[bootstrap_sample['slave_trade'] == 1, 'fold'] = pd.cut(bootstrap_sample[bootstrap_sample['slave_trade'] == 1]['row_by_st'], bins=5, labels=False)
-    
-    # Now randomly reshuffle the folds within slave trade status, keeping groups fixed
-    ids_1 = bootstrap_sample.loc[bootstrap_sample['slave_trade'] == 0, 'ethnicity_id'].unique()
-    random.Random(0).shuffle(ids_1)
-    
-    ids_2 = bootstrap_sample.loc[bootstrap_sample['slave_trade'] == 1, 'ethnicity_id'].unique()
-    random.Random(0).shuffle(ids_2)
-    
-    ids = list(ids_1) + list(ids_2)  # So shuffling occurs by group and within slave trade status 
-    
-    temp = bootstrap_sample.copy(deep=True)
-    temp = temp.set_index('ethnicity_id').loc[ids].reset_index()
-    
-    bootstrap_sample['fold'] = list(temp['fold'])
-    
-    results = bootstrap_sample.copy(deep=True)
-    results = results.loc[:, ['ethnicity_id', 'year', 'fold', 'persistent', 'slave_trade']]
-    results['predicted_persistence'] = None
-    results['predicted_probabilities'] = None
-    
-    # Now train, predict, and score using 5-fold CV 
-    for k in range(5):
-        df_k = bootstrap_sample.loc[bootstrap_sample['fold'] == k]
-        df_nk = bootstrap_sample.loc[bootstrap_sample['fold'] != k]
+        predicted_persistence = self.instrument
         
-        # Extract the 2014 observations with slave_trade = 0 in groups nk for training 
-        X_nk = df_nk[(df_nk['year'] == 2014) & (df_nk['slave_trade'] == 0)]
-        X_nk = X_nk[['diamonds', 'oil', 'gold_dep', 'malaria_pf', 'malaria_pv', 'rainfall', 'surface',
-                     'num_coloni', 'lat', 'lon', 'Belgium', 'Britain', 'France', 'Germany', 
-                     'Italy', 'Portugal', 'Spain']]
-        y_nk = df_nk[(df_nk['year'] == 2014) & (df_nk['slave_trade'] == 0)]
-        y_nk = y_nk[['persistent']].values.ravel()
-    
-        # Train model 
-        rf.fit(X_nk, y_nk)
+        control_terms = c1*self.exog[:,2] + c2*self.exog[:,3] + c3*self.exog[:,4] + c4*self.exog[:,5] 
+        control_terms_st1 = d1*self.exog[:,2] + d2*self.exog[:,3] + d3*self.exog[:,4] + d4*self.exog[:,5] 
         
-        # Now predict on fold k 
-        X_k = df_k[['diamonds', 'oil', 'gold_dep', 'malaria_pf', 'malaria_pv',  'rainfall', 'surface',
-                    'num_coloni', 'lat', 'lon', 'Belgium', 'Britain', 'France', 
-                    'Germany', 'Italy', 'Portugal', 'Spain']].values
-        results.loc[results['fold'] == k, 'predicted_persistence'] = rf.predict(X_k)
-        results.loc[results['fold'] == k, 'predicted_probabilities'] = rf.predict_proba(X_k)[:, 1]
-    
-    results['predicted_persistence'] = results['predicted_persistence'].astype('int64')
-    
-    # Add predicted persistence to the bootstrapped sample 
-    bootstrap_sample = bootstrap_sample.merge(results[['ethnicity_id', 'year', 'predicted_persistence']], on=['ethnicity_id', 'year'])
-    
-    bootstrap_sample.set_index(['ethnicity_id', 'year'], inplace=True, drop=False)
-    
-    # Estimate each of the 4 regressions 
-    _beta = PanelOLS.from_formula('log_gdp_capita ~ slave_trade * predicted_persistence + TimeEffects', data=bootstrap_sample).fit().params
-    dd_pred1_bootstraps.loc[i] =  list(_beta)
-    
-    _beta = PanelOLS.from_formula('log_gdp ~ slave_trade * predicted_persistence + TimeEffects', data=bootstrap_sample).fit().params
-    dd_pred2_bootstraps.loc[i] =  list(_beta)
-    
-    _beta = PanelOLS.from_formula('log_gdp_capita ~ slave_trade * predicted_persistence + {} + TimeEffects'.format(controls), data=bootstrap_sample).fit().params
-    dd_pred3_bootstraps.loc[i] =  list(_beta)
-    
-    _beta = PanelOLS.from_formula('log_gdp ~ slave_trade * predicted_persistence + {} + TimeEffects'.format(controls), data=bootstrap_sample).fit().params
-    dd_pred4_bootstraps.loc[i] =  list(_beta)
-    
-# Now calculate the p-values for each model 
-dd_pred1_p = dict()
-dd_pred2_p = dict()
-dd_pred3_p = dict()
-dd_pred4_p = dict()
-    
-j = 0
-for var in list(dd_pred1.params.keys()):
-    num_larger = dd_pred1_bootstraps[abs(dd_pred1_bootstraps[var] - dd_pred1_bootstraps[var].mean()) > abs(dd_pred1.params[j])][var].count()
-    p = num_larger/len(dd_pred1_bootstraps)
-    dd_pred1_p[var] = p
-    j += 1  
-    
-j = 0
-for var in list(dd_pred2.params.keys()):
-    num_larger = dd_pred2_bootstraps[abs(dd_pred2_bootstraps[var] - dd_pred2_bootstraps[var].mean()) > abs(dd_pred2.params[j])][var].count()
-    p = num_larger/len(dd_pred2_bootstraps)
-    dd_pred2_p[var] = p
-    j += 1  
-    
-j = 0
-for var in list(dd_pred3.params.keys()):
-    num_larger = dd_pred3_bootstraps[abs(dd_pred3_bootstraps[var] - dd_pred3_bootstraps[var].mean()) > abs(dd_pred3.params[j])][var].count()
-    p = num_larger/len(dd_pred3_bootstraps)
-    dd_pred3_p[var] = p
-    j += 1  
-    
-j = 0
-for var in list(dd_pred4.params.keys()):
-    num_larger = dd_pred4_bootstraps[abs(dd_pred4_bootstraps[var] - dd_pred4_bootstraps[var].mean()) > abs(dd_pred4.params[j])][var].count()
-    p = num_larger/len(dd_pred4_bootstraps)
-    dd_pred4_p[var] = p
-    j += 1  
+        m1 = (1 - slave_trade)*predicted_persistence*((persistent - gamma*predicted_persistence)/(gamma*predicted_persistence*(1-gamma*predicted_persistence)))
+        m2 = slave_trade*(y-delta1-psi1*gamma*predicted_persistence-predicted_persistence*kappa - control_terms_st1)
+        m3 = slave_trade*predicted_persistence*(y-delta1-psi1*gamma*predicted_persistence-predicted_persistence*kappa - control_terms_st1)
+        m4 = slave_trade*self.exog[:,2]*(y-delta1-psi1*gamma*predicted_persistence-predicted_persistence*kappa - control_terms_st1)
+        m5 = slave_trade*self.exog[:,3]*(y-delta1-psi1*gamma*predicted_persistence-predicted_persistence*kappa - control_terms_st1)
+        m6 = slave_trade*self.exog[:,4]*(y-delta1-psi1*gamma*predicted_persistence-predicted_persistence*kappa - control_terms_st1)
+        m7 = slave_trade*self.exog[:,5]*(y-delta1-psi1*gamma*predicted_persistence-predicted_persistence*kappa - control_terms_st1)
+        m8 = (1 - slave_trade)*(y - delta0 - psi0*persistent - predicted_persistence*kappa - control_terms)
+        m9 = (1 - slave_trade)*predicted_persistence*(y - delta0 - psi0*persistent - predicted_persistence*kappa - control_terms)
+        m10 = (1 - slave_trade)*persistent*(y - delta0 - psi0*persistent - predicted_persistence*kappa - control_terms)
+        m11 = (1 - slave_trade)*self.exog[:,2]*(y - delta0 - psi0*persistent - predicted_persistence*kappa - control_terms)
+        m12 = (1 - slave_trade)*self.exog[:,3]*(y - delta0 - psi0*persistent - predicted_persistence*kappa - control_terms)
+        m13 = (1 - slave_trade)*self.exog[:,4]*(y - delta0 - psi0*persistent - predicted_persistence*kappa - control_terms)
+        m14 = (1 - slave_trade)*self.exog[:,5]*(y - delta0 - psi0*persistent - predicted_persistence*kappa - control_terms)
+        g = np.column_stack((m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12, m13, m14))
+        return g
 
-to_rename['predicted_persistence'] = 'Predicted persistence'
-to_rename['slave_trade:predicted_persistence'] = 'Slave trade x Predicted persistence'
-panel_to_tex('tables/diff-in-diff-pred.tex', [dd_pred1, dd_pred2, dd_pred3, dd_pred4], to_rename,
-             rf_bootstrap=[dd_pred1_p, dd_pred2_p, dd_pred3_p, dd_pred4_p])
+beta0 = np.ones(6)
+gmm_results = proxyDiD(endog=df['log_gdp_capita'], 
+                       exog=df[['slave_trade', 'persistent']], 
+                       instrument=df['predicted_probabilities']).fit(beta0, maxiter = 1)  # Just identified so just want one-step
+print(gmm_results.summary())
+
+gmm_results2 = proxyDiD(endog=df['log_gdp'], 
+                       exog=df[['slave_trade', 'persistent']], 
+                       instrument=df['predicted_probabilities']).fit(beta0, maxiter = 1)
+print(gmm_results2.summary())
+
+beta1 = np.ones(14)
+gmm_results3 = proxyDiDControls(endog=df['log_gdp_capita'], 
+                       exog=df[['slave_trade', 'persistent', 'diamonds', 'oil', 'gold_dep',
+                                'neighbors']], 
+                       instrument=df['predicted_probabilities']).fit(beta1, maxiter = 1)
+print(gmm_results3.summary())
+    
+gmm_results4 = proxyDiDControls(endog=df['log_gdp'], 
+                       exog=df[['slave_trade', 'persistent', 'diamonds', 'oil', 'gold_dep',
+                                'neighbors']], 
+                       instrument=df['predicted_probabilities']).fit(beta1, maxiter = 1)
+print(gmm_results4.summary())
+
+west_africa = df.loc[df.west_afric == 1, :]
+
+gmm_results5 = proxyDiDControls(endog=west_africa['log_gdp_capita'], 
+                       exog=west_africa[['slave_trade', 'persistent', 'diamonds', 'oil', 'gold_dep',
+                                'neighbors']], 
+                       instrument=west_africa['predicted_probabilities']).fit(beta1, maxiter = 1)
+print(gmm_results5.summary())
+    
+gmm_results6 = proxyDiDControls(endog=west_africa['log_gdp'], 
+                       exog=west_africa[['slave_trade', 'persistent', 'diamonds', 'oil', 'gold_dep',
+                                'neighbors']], 
+                       instrument=west_africa['predicted_probabilities']).fit(beta1, maxiter = 1)
+print(gmm_results6.summary())
+
+#%% 
+# Now define function to write the GMM results to LaTex
+# Need to calculate the comparable results (e.g. diff-in-diff coefficient) with post-estimation tests
+def gmm_to_tex(out_path, results):
+    # T-test for diff-in-diff parameter
+    diff_in_diff_coefs = list()
+    diff_in_diff_ses = list()
+    diff_in_diff_p_vals = list()
+    for result in results:
+        if len(result.params) == 6:
+            att_t_test = result.t_test(np.array([[-1, 1, 0, 0, 0, 0]])).summary_frame()
+        else:
+            att_t_test = result.t_test(np.array([[-1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]])).summary_frame()
+        att = att_t_test['coef'].iloc[0]
+        att_se = att_t_test['std err'].iloc[0]
+        att_p = att_t_test['P>|z|'].iloc[0]
+        diff_in_diff_coefs.append(att)
+        diff_in_diff_ses.append(att_se)
+        diff_in_diff_p_vals.append(att_p)
+        
+    # T-test for slave trade parameter
+    st_coefs = list()
+    st_ses = list()
+    st_p_vals = list()
+    for result in results:
+        if len(result.params) == 6:
+            st_t_test = result.t_test(np.array([[0, 0, 0, -1, 1, 0]])).summary_frame()
+        else:
+            st_t_test = result.t_test(np.array([[0, 0, 0, -1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]])).summary_frame()
+        st = st_t_test['coef'].iloc[0]
+        st_se = st_t_test['std err'].iloc[0]
+        st_p = st_t_test['P>|z|'].iloc[0]
+        st_coefs.append(st)
+        st_ses.append(st_se)
+        st_p_vals.append(st_p)
+        
+    to_export = pd.DataFrame(columns=['Var'])
+    var_names = ['Intercept', 'Slave trade', 'Persistent ethnicity', 'Slave trade x Persistent']
+    
+    for v in var_names:
+        to_export.loc[len(to_export)] = v
+        to_export.loc[len(to_export)] = ''  # For SE
+        to_export.loc[len(to_export)] = ''  # Blank line between variables for display
+    
+    to_export.loc[len(to_export)] = 'Proxy t-stat'
+    to_export.loc[len(to_export)] = 'Controls'
+    to_export.loc[len(to_export)] = 'Observations'
+    
+    # We have now populated the labels for each variable. Now iterate over the models and populate the results
+    i = 1 
+    for r in results:
+        to_export['({})'.format(i)] = ''  # Column to store results
+        
+        # Intercept (delta0)
+        p_index = to_export[to_export['Var'] == 'Intercept'].index[0]
+        to_export.loc[p_index, '({})'.format(i)] = assign_stars(r.params[3], r.pvalues[3])  
+        to_export.loc[p_index + 1, '({})'.format(i)] = '({:,.3f})'.format(r.bse[3])
+        
+        # Slave trade (delta1 - delta0)
+        p_index = to_export[to_export['Var'] == 'Slave trade'].index[0]
+        to_export.loc[p_index, '({})'.format(i)] = assign_stars(st_coefs[i-1], st_p_vals[i-1])  
+        to_export.loc[p_index + 1, '({})'.format(i)] = '({:,.3f})'.format(st_ses[i-1])
+        
+        # Persistence (Psi0)
+        p_index = to_export[to_export['Var'] == 'Persistent ethnicity'].index[0]
+        to_export.loc[p_index, '({})'.format(i)] = assign_stars(r.params[0], r.pvalues[0])  
+        to_export.loc[p_index + 1, '({})'.format(i)] = '({:,.3f})'.format(r.bse[0])
+        
+        # Slave trade x persistent 
+        p_index = to_export[to_export['Var'] == 'Slave trade x Persistent'].index[0]
+        to_export.loc[p_index, '({})'.format(i)] = assign_stars(diff_in_diff_coefs[i-1], diff_in_diff_p_vals[i-1])  
+        to_export.loc[p_index + 1, '({})'.format(i)] = '({:,.3f})'.format(diff_in_diff_ses[i-1])
+        
+        to_export.loc[(to_export['Var'] == 'Proxy t-stat'), '({})'.format(i)] = '{:,.3f}'.format(r.tvalues[2])
+        
+        # Now controls if included 
+        if len(r.params) > 6:
+            to_export.loc[(to_export['Var'] == 'Controls'), '({})'.format(i)] = 'Yes'
+        else:
+            to_export.loc[(to_export['Var'] == 'Controls'), '({})'.format(i)] = 'No'
+        
+        to_export.loc[(to_export['Var'] == 'Observations'), '({})'.format(i)] = '{:,.0f}'.format(r.nobs)
+        
+        i += 1
+    with open(out_path, 'w') as f:
+        to_export.to_latex(f, header=False, index=False, na_rep='', escape=False)
+    
+# Now output the results 
+gmm_to_tex('tables/diff-in-diff-pred.tex', [gmm_results, gmm_results2, gmm_results3, gmm_results4, gmm_results5, gmm_results6])    
+    
 
 #%% 
 # Winsorized diff in diff 
 df['log_gdp_capita_wins'] = winsorize(df['log_gdp_capita'], limits=[0.05, 0.05])
 df['log_gdp_wins'] = winsorize(df['log_gdp'], limits=[0.05, 0.05])
 
-dd_ri_p_wins = list()
 
 # log(GDP/capita)
-wins1 = PanelOLS.from_formula('log_gdp_capita_wins ~ slave_trade * persistent + TimeEffects', data=df).fit(cov_type="clustered", cluster_entity=True)
-dd_ri_p_wins.append(ri_p_values('log_gdp_capita_wins ~ slave_trade * persistent', df, wins1.params, 10000))
-print(wins1)
+wins1 = smf.ols('log_gdp_capita_wins ~ slave_trade * persistent', data=df).fit(cov_type='HC0')
+print(wins1.summary())
 
 # log(GDP)
-wins2 = PanelOLS.from_formula('log_gdp_wins ~ slave_trade * persistent + TimeEffects', data=df).fit(cov_type="clustered", cluster_entity=True)
-dd_ri_p_wins.append(ri_p_values('log_gdp_wins ~ slave_trade * persistent', df, wins2.params, 10000))
-print(wins2)
+wins2 = smf.ols('log_gdp_wins ~ slave_trade * persistent', data=df).fit(cov_type='HC0')
+print(wins2.summary())
 
 # Add controls 
-wins3 = PanelOLS.from_formula('log_gdp_capita_wins ~ slave_trade * persistent + {} + TimeEffects'.format(controls), data=df).fit(cov_type="clustered", cluster_entity=True)
-dd_ri_p_wins.append(ri_p_values('log_gdp_capita_wins ~ slave_trade * persistent + {}'.format(controls), df, wins3.params, 10000))
-print(wins3)
+wins3 = smf.ols('log_gdp_capita_wins ~ slave_trade * persistent + {}'.format(controls), data=df).fit(cov_type='HC0')
+print(wins3.summary())
 
-wins4 = PanelOLS.from_formula('log_gdp_wins ~ slave_trade * persistent + {} + TimeEffects'.format(controls), data=df).fit(cov_type="clustered", cluster_entity=True)
-dd_ri_p_wins.append(ri_p_values('log_gdp_wins ~ slave_trade * persistent + {}'.format(controls), df, wins4.params, 10000))
-print(wins4)
+wins4 = smf.ols('log_gdp_wins ~ slave_trade * persistent + {}'.format(controls), data=df).fit(cov_type='HC0')
+print(wins4.summary())
 
 # West Africa 
 west_africa = df.loc[df.west_afric == 1, :]
-west_africa.set_index(['ethnicity_id', 'year'], inplace=True, drop=False)
 
-wins5 = PanelOLS.from_formula('log_gdp_capita_wins ~ slave_trade * persistent + {} + TimeEffects'.format(controls), data=west_africa).fit(cov_type="clustered", cluster_entity=True)
-dd_ri_p_wins.append(ri_p_values('log_gdp_capita_wins ~ slave_trade * persistent + {}'.format(controls), west_africa, wins5.params, 10000))
-print(wins5)
+wins5 = smf.ols('log_gdp_capita_wins ~ slave_trade * persistent + {}'.format(controls), data=west_africa).fit(cov_type='HC0')
+print(wins5.summary())
 
-wins6 = PanelOLS.from_formula('log_gdp_wins ~ slave_trade * persistent + {} + TimeEffects'.format(controls), data=west_africa).fit(cov_type="clustered", cluster_entity=True)
-dd_ri_p_wins.append(ri_p_values('log_gdp_wins ~ slave_trade * persistent + {}'.format(controls), west_africa, wins6.params, 10000))
-print(wins6)
+wins6 = smf.ols('log_gdp_wins ~ slave_trade * persistent + {}'.format(controls), data=west_africa).fit(cov_type='HC0')
+print(wins6.summary())
 
 to_rename['persistent'] = 'Persistent ethnicity'
 to_rename['slave_trade:persistent'] = 'Slave trade x Persistent'
-panel_to_tex('tables/diff-in-dif-winsorized.tex', [wins1, wins2, wins3, wins4, wins5, wins6], to_rename, ri=True, ri_p_vals=dd_ri_p_wins)
+panel_to_tex('tables/diff-in-dif-winsorized.tex', [wins1, wins2, wins3, wins4, wins5, wins6], to_rename, ri=False, cross_section=True)
 
 
 #%%
 # Robustness: continuous measure of persistence 
 df['continuous_persistence'] = .01*df['persistenc']
-cp_ri_p = list()
 
-cp1 = PanelOLS.from_formula('log_gdp_capita ~ slave_trade * continuous_persistence + TimeEffects', data=df).fit(cov_type="clustered", cluster_entity=True)
-cp_ri_p.append(ri_p_values('log_gdp_capita ~ slave_trade * continuous_persistence', df, cp1.params, 10000))
-print(cp1)
+cp1 = smf.ols('log_gdp_capita ~ slave_trade * continuous_persistence', data=df).fit(cov_type='HC0')
+print(cp1.summary())
 
-cp2 = PanelOLS.from_formula('log_gdp ~ slave_trade * continuous_persistence + TimeEffects', data=df).fit(cov_type="clustered", cluster_entity=True)
-cp_ri_p.append(ri_p_values('log_gdp ~ slave_trade * continuous_persistence', df, cp2.params, 10000))
-print(cp2)
+cp2 = smf.ols('log_gdp ~ slave_trade * continuous_persistence', data=df).fit(cov_type='HC0')
+print(cp2.summary())
 
-cp3 = PanelOLS.from_formula('log_gdp_capita ~ slave_trade * continuous_persistence + {} + TimeEffects'.format(controls), data=df).fit(cov_type="clustered", cluster_entity=True)
-cp_ri_p.append(ri_p_values('log_gdp_capita ~ slave_trade * continuous_persistence + {}'.format(controls), df, cp3.params, 10000))
-print(cp3)
+cp3 = smf.ols('log_gdp_capita ~ slave_trade * continuous_persistence + {}'.format(controls), data=df).fit(cov_type='HC0')
+print(cp3.summary())
 
-cp4 = PanelOLS.from_formula('log_gdp ~ slave_trade * continuous_persistence + {} + TimeEffects'.format(controls), data=df).fit(cov_type="clustered", cluster_entity=True)
-cp_ri_p.append(ri_p_values('log_gdp ~ slave_trade * continuous_persistence + {}'.format(controls), df, cp4.params, 10000))
-print(cp4)
+cp4 = smf.ols('log_gdp ~ slave_trade * continuous_persistence + {}'.format(controls), data=df).fit(cov_type='HC0')
+print(cp4.summary())
 
 # West Africa 
 west_africa = df.loc[df.west_afric == 1, :]
-west_africa.set_index(['ethnicity_id', 'year'], inplace=True, drop=False)
 
-cp5 = PanelOLS.from_formula('log_gdp_capita ~ slave_trade * continuous_persistence + {} + TimeEffects'.format(controls), data=west_africa).fit(cov_type="clustered", cluster_entity=True)
-cp_ri_p.append(ri_p_values('log_gdp_capita ~ slave_trade * continuous_persistence + {}'.format(controls), west_africa, cp5.params, 10000))
-print(cp5)
+cp5 = smf.ols('log_gdp_capita ~ slave_trade * continuous_persistence + {}'.format(controls), data=west_africa).fit(cov_type='HC0')
+print(cp5.summary())
 
-cp6 = PanelOLS.from_formula('log_gdp ~ slave_trade * continuous_persistence + {} + TimeEffects'.format(controls), data=west_africa).fit(cov_type="clustered", cluster_entity=True)
-cp_ri_p.append(ri_p_values('log_gdp ~ slave_trade * continuous_persistence + {}'.format(controls), west_africa, cp6.params, 10000))
-print(cp6)
+cp6 = smf.ols('log_gdp ~ slave_trade * continuous_persistence + {}'.format(controls), data=west_africa).fit(cov_type='HC0')
+print(cp6.summary())
 
 
 to_rename['continuous_persistence'] = "Persistence"
 to_rename['slave_trade:continuous_persistence'] = 'Slave trade x Persistence'
 
-panel_to_tex('tables/continuous-persistence.tex', [cp1, cp2, cp3, cp4, cp5, cp6], to_rename, ri=True, ri_p_vals=cp_ri_p)
+panel_to_tex('tables/continuous-persistence.tex', [cp1, cp2, cp3, cp4, cp5, cp6], to_rename, ri=False, cross_section=True)
 
+#%%
+# Robustness: ST = 0 if slave exported very low (fewer than 1,000 slaves exported)
+df['slave_trade'] = np.where(df['total_ensl'] > 0.1, 1, 0)  # Call it slave_trade still so labeling still works
+
+dd_cons_1 = smf.ols('log_gdp_capita ~ slave_trade * persistent', data=df).fit(cov_type='HC0')
+print(dd_cons_1.summary())
+
+# log(nightlights)
+dd_cons_2 = smf.ols('log_gdp ~ slave_trade * persistent', data=df).fit(cov_type='HC0')
+print(dd_cons_2.summary())
+
+# Add controls 
+dd_cons_3 = smf.ols('log_gdp_capita ~ slave_trade * persistent + {}'.format(controls), data=df).fit(cov_type='HC0')
+print(dd_cons_3.summary())
+
+dd_cons_4 = smf.ols('log_gdp ~ slave_trade * persistent + {}'.format(controls), data=df).fit(cov_type='HC0')
+print(dd_cons_4.summary())
+
+# Now restrict to West Africa only 
+west_africa_cs = df.loc[df.west_afric == 1, :]
+dd_cons_5 = smf.ols('log_gdp_capita ~ slave_trade * persistent + {}'.format(controls), data=west_africa_cs).fit(cov_type='HC0')
+print(dd_cons_5.summary())
+
+dd_cons_6 = smf.ols('log_gdp ~ slave_trade * persistent + {}'.format(controls), data=west_africa_cs).fit(cov_type='HC0')
+print(dd_cons_6.summary())
+
+to_rename['persistent'] = 'Persistent ethnicity'
+to_rename['slave_trade:persistent'] = 'Slave trade x Persistent'
+panel_to_tex('tables/diff-in-diff-conservative.tex', [dd_cons_1, dd_cons_2, dd_cons_3, dd_cons_4, dd_cons_5, dd_cons_6], to_rename, ri=False, cross_section=True)
